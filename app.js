@@ -13,7 +13,7 @@ var LocalStrategy = require('passport-local').Strategy;
 var bcrypt = require('bcrypt-nodejs');//for hashing user passwords
 var async = require('async');// library to avoid dealing with nested callbacks by using with the help of async.waterfall method
 var crypto = require('crypto');//for generating random token during a password reset.
-
+var flash = require('express-flash');// add flash messages to notify users about success and error messages
 
 var index = require('./routes/index');
 var users = require('./routes/users');
@@ -40,6 +40,9 @@ app.use(session({
   secret:'session secret key'
 }));
 
+
+app.use(flash());
+
 //adding the Passport middleware to our Express configuration
 app.use(passport.initialize());
 app.use(passport.session());
@@ -57,6 +60,7 @@ var userSchema = new mongoose.Schema({
   resetPasswordExpires: Date
 });
 
+//hashing passwords on save
 userSchema.pre('save', function(next) {
   var user = this;
   var SALT_FACTOR = 5;
@@ -74,6 +78,7 @@ userSchema.pre('save', function(next) {
   });
 });
 
+//password verification when user tries to sign in,following is the mongoose instance method
 userSchema.methods.comparePassword = function(candidatePassword, cb) {
   bcrypt.compare(candidatePassword, this.password, function(err, isMatch) {
     if (err) return cb(err);
@@ -114,6 +119,7 @@ app.get('/', function(req, res, next) {
 
 app.get('/login',function(req,res){
   res.render('login',{ user : req.user});
+  console.log("login reached");
 });
 
 app.get('/signup', function(req, res) {
@@ -125,6 +131,12 @@ app.get('/signup', function(req, res) {
 app.get('/logout',function(req,res){
   req.logout();
   res.redirect('/');
+});
+
+app.get('/forgot',function(req,res){
+  res.render('forgot',{
+    user:req.user
+  });
 });
 
 app.post('/login',function(req,res,next){
@@ -154,6 +166,61 @@ app.post('/signup',function(req,res){
   });
 });
 
+
+
+app.post('/forgot', function(req, res, next) {
+  async.waterfall([
+    function(done) {
+      crypto.randomBytes(20, function(err, buf) {
+        var token = buf.toString('hex');
+        done(err, token);
+      });
+    },
+    function(token, done) {
+      User.findOne({ email: req.body.email }, function(err, user) {
+        if (!user) {
+          req.flash('error', 'No account with that email address exists.');
+          return res.redirect('/forgot');
+        }
+
+        user.resetPasswordToken = token;
+        user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+
+        user.save(function(err) {
+          done(err, token, user);
+        });
+      });
+    },
+    function(token, user, done) {
+      var smtpTransport = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: 'mohammedbabushaik@gmail.com',
+          pass: 'abcde'
+        }
+      });
+      console.log(user.email);
+      var mailOptions = {
+        to: user.email,
+        from: 'mohammedbabushaik@gmail.com',
+        subject: 'Node.js Password Reset',
+        text: 'You are receiving this because you (or someone else) have requested the reset of the password for your account.\n\n' +
+          'Please click on the following link, or paste this into your browser to complete the process:\n\n' +
+          'http://' + req.headers.host + '/reset/' + token + '\n\n' +
+          'If you did not request this, please ignore this email and your password will remain unchanged.\n'
+      };
+      smtpTransport.sendMail(mailOptions, function(err, info) {
+        console.log(err);
+        console.log(info);
+        req.flash('info', 'An e-mail has been sent to ' + user.email + ' with further instructions.');
+        done(err, 'done');
+      });
+    }
+  ], function(err) {
+    if (err) return next(err);
+    res.redirect('/forgot');
+  });
+});
 
 //app.use('/', index);
 app.use('/users', users);
